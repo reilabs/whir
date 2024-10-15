@@ -74,8 +74,10 @@ where
 
         for _ in 0..folding_factor {
             let sumcheck_poly = self.sumcheck_prover.compute_sumcheck_polynomial();
+            println!("Prover is adding {:?}", sumcheck_poly); //Reilabs Debug: 
             merlin.add_scalars(sumcheck_poly.evaluations())?;
             let [folding_randomness]: [F; 1] = merlin.challenge_scalars()?;
+            println!("Prover is adding folding randomness {:?}", folding_randomness); //Reilabs Debug: 
             res.push(folding_randomness);
 
             // Do PoW if needed

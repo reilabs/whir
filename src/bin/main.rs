@@ -184,103 +184,8 @@ fn run_whir<F, MerkleConfig>(
 {
     match args.protocol_type {
         WhirType::PCS => run_whir_pcs::<F, MerkleConfig>(args, leaf_hash_params, two_to_one_params),
-        WhirType::LDT => {
-            run_whir_as_ldt::<F, MerkleConfig>(args, leaf_hash_params, two_to_one_params)
-        }
+        WhirType::LDT => {}
     }
-}
-
-fn run_whir_as_ldt<F, MerkleConfig>(
-    args: Args,
-    leaf_hash_params: <<MerkleConfig as Config>::LeafHash as CRHScheme>::Parameters,
-    two_to_one_params: <<MerkleConfig as Config>::TwoToOneHash as TwoToOneCRHScheme>::Parameters,
-) where
-    F: FftField + CanonicalSerialize,
-    MerkleConfig: Config<Leaf = [F]> + Clone,
-    MerkleConfig::InnerDigest: AsRef<[u8]> + From<[u8; 32]>,
-{
-    use whir::whir_ldt::{
-        committer::Committer, iopattern::WhirIOPattern, parameters::WhirConfig, prover::Prover,
-        verifier::Verifier, whir_proof_size,
-    };
-
-    // Runs as a LDT
-    let security_level = args.security_level;
-    let pow_bits = args.pow_bits.unwrap();
-    let num_variables = args.num_variables;
-    let starting_rate = args.rate;
-    let reps = args.verifier_repetitions;
-    let folding_factor = args.folding_factor;
-    let fold_optimisation = args.fold_optimisation;
-    let soundness_type = args.soundness_type;
-
-    if args.num_evaluations > 1 {
-        println!("Warning: running as LDT but a number of evaluations to be proven was specified.");
-    }
-
-    let num_coeffs = 1 << num_variables;
-
-    let mv_params = MultivariateParameters::<F>::new(num_variables);
-
-    let whir_params = WhirParameters::<MerkleConfig, PowStrategy> {
-        security_level,
-        pow_bits,
-        folding_factor,
-        leaf_hash_params,
-        two_to_one_params,
-        soundness_type,
-        fold_optimisation,
-        _pow_parameters: Default::default(),
-        starting_log_inv_rate: starting_rate,
-    };
-
-    let params = WhirConfig::<F, MerkleConfig, PowStrategy>::new(mv_params, whir_params);
-
-    let io = IOPattern::<DefaultHash>::new("🌪️")
-        .commit_statement(&params)
-        .add_whir_proof(&params)
-        .clone();
-
-    let mut merlin = io.to_merlin();
-
-    println!("=========================================");
-    println!("Whir (LDT) 🌪️");
-    println!("Field: {:?} and MT: {:?}", args.field, args.merkle_tree);
-    println!("{}", params);
-    if !params.check_pow_bits() {
-        println!("WARN: more PoW bits required than what specified.");
-    }
-
-    use ark_ff::Field;
-    let polynomial = CoefficientList::new(
-        (0..num_coeffs)
-            .map(<F as Field>::BasePrimeField::from)
-            .collect(),
-    );
-
-    let whir_prover_time = Instant::now();
-
-    let committer = Committer::new(params.clone());
-    let witness = committer.commit(&mut merlin, polynomial).unwrap();
-
-    let prover = Prover(params.clone());
-
-    let proof = prover.prove(&mut merlin, witness).unwrap();
-
-    dbg!(whir_prover_time.elapsed());
-    dbg!(whir_proof_size(merlin.transcript(), &proof));
-
-    // Just not to count that initial inversion (which could be precomputed)
-    let verifier = Verifier::new(params);
-
-    HashCounter::reset();
-    let whir_verifier_time = Instant::now();
-    for _ in 0..reps {
-        let mut arthur = io.to_arthur(merlin.transcript());
-        verifier.verify(&mut arthur, &proof).unwrap();
-    }
-    dbg!(whir_verifier_time.elapsed() / reps as u32);
-    dbg!(HashCounter::get() as f64 / reps as f64);
 }
 
 fn run_whir_pcs<F, MerkleConfig>(
@@ -335,6 +240,8 @@ fn run_whir_pcs<F, MerkleConfig>(
         .add_whir_proof(&params)
         .clone();
 
+    println!("IOPattern: {:?}", io); //Reilabs Debug: 
+
     let mut merlin = io.to_merlin();
 
     println!("=========================================");
@@ -351,6 +258,7 @@ fn run_whir_pcs<F, MerkleConfig>(
             .map(<F as Field>::BasePrimeField::from)
             .collect(),
     );
+    // println!("{:?}", polynomial); //Reilabs Debug: 
     let points: Vec<_> = (0..num_evaluations)
         .map(|i| MultilinearPoint(vec![F::from(i as u64); num_variables]))
         .collect();
@@ -363,39 +271,23 @@ fn run_whir_pcs<F, MerkleConfig>(
         points,
         evaluations,
     };
-
-    let whir_prover_time = Instant::now();
+    println!("Points {:?}", statement.points); //Reilabs Debug: 
+    println!("Evaluations {:?}", statement.evaluations); //Reilabs Debug: 
 
     let committer = Committer::new(params.clone());
     let witness = committer.commit(&mut merlin, polynomial).unwrap();
-
     let prover = Prover(params.clone());
 
     let proof = prover
         .prove(&mut merlin, statement.clone(), witness)
         .unwrap();
 
-    println!("Prover time: {:.1?}", whir_prover_time.elapsed());
-    println!(
-        "Proof size: {:.1} KiB",
-        whir_proof_size(merlin.transcript(), &proof) as f64 / 1024.0
-    );
-
     // Just not to count that initial inversion (which could be precomputed)
     let verifier = Verifier::new(params);
 
     HashCounter::reset();
-    let whir_verifier_time = Instant::now();
     for _ in 0..reps {
         let mut arthur = io.to_arthur(merlin.transcript());
         verifier.verify(&mut arthur, &statement, &proof).unwrap();
     }
-    println!(
-        "Verifier time: {:.1?}",
-        whir_verifier_time.elapsed() / reps as u32
-    );
-    println!(
-        "Average hashes: {:.1}k",
-        (HashCounter::get() as f64 / reps as f64) / 1000.0
-    );
 }
