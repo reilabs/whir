@@ -106,6 +106,7 @@ where
     ) -> ProofResult<ParsedProof<F>> {
         // Derive combination randomness and first sumcheck polynomial
         let [combination_randomness_gen]: [F; 1] = arthur.challenge_scalars()?;
+        println!("Initial combination randomness generator is: {:?}", combination_randomness_gen); //Reilabs Debug: 
         let initial_combination_randomness = expand_randomness(
             combination_randomness_gen,
             parsed_commitment.ood_points.len() + statement.points.len(),
@@ -116,9 +117,10 @@ where
         for _ in 0..self.params.folding_factor {
             let sumcheck_poly_evals: [F; 3] = arthur.next_scalars()?;
             let sumcheck_poly = SumcheckPolynomial::new(sumcheck_poly_evals.to_vec(), 1);
+            println!("Initial sumcheck polynomials: {:?}", sumcheck_poly); //Reilabs Debug: 
             let [folding_randomness_single] = arthur.challenge_scalars()?;
+            println!("Initial sumcheck verifier folding randomness: {:?}", folding_randomness_single); //Reilabs Debug:
             sumcheck_rounds.push((sumcheck_poly, folding_randomness_single));
-
             if self.params.starting_folding_pow_bits > 0. {
                 arthur.challenge_pow::<PowStrategy>(self.params.starting_folding_pow_bits)?;
             }
@@ -449,12 +451,17 @@ where
         // We first do a pass in which we rederive all the FS challenges
         // Then we will check the algebraic part (so to optimise inversions)
         let parsed_commitment = self.parse_commitment(arthur)?;
+        println!("The Root is: {:?}", parsed_commitment.root); //Reilabs Debug: 
+        println!("The OOD query is: {:?}", parsed_commitment.ood_points); //Reilabs Debug: 
+        println!("The OOD answer is: {:?}", parsed_commitment.ood_answers); //Reilabs Debug: 
         let parsed = self.parse_proof(arthur, &parsed_commitment, statement, whir_proof)?;
 
         let computed_folds = self.compute_folds(&parsed);
 
         // Check the first polynomial
         let (mut prev_poly, mut randomness) = parsed.initial_sumcheck_rounds[0].clone();
+        println!("First polynomial: {:?}", prev_poly); //Reilabs Debug
+        println!("Initial combination randomness{:?}", parsed.initial_combination_randomness); //Reilabs Debug: 
         if prev_poly.sum_over_hypercube()
             != parsed_commitment
                 .ood_answers
@@ -462,7 +469,10 @@ where
                 .copied()
                 .chain(statement.evaluations.clone())
                 .zip(&parsed.initial_combination_randomness)
-                .map(|(ans, rand)| ans * rand)
+                .map(|(ans, rand)| {
+                    println!("Ans: {:?} Rand: {:?}", ans, rand); //Reilabs Debug: 
+                    ans * rand
+                })
                 .sum()
         {
             return Err(ProofError::InvalidProof);
