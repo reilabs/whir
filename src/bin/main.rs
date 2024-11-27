@@ -21,6 +21,9 @@ use whir::{
 use nimue_pow::blake3::Blake3PoW;
 
 use clap::Parser;
+use nimue::hash::sponge::{DuplexSponge, Sponge};
+use whir::crypto::fields::Field256;
+use whir::skyscraper::{Skyscraper, SkyscraperSponge};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -184,7 +187,7 @@ fn run_whir<F, MerkleConfig>(
     MerkleConfig::InnerDigest: AsRef<[u8]> + From<[u8; 32]>,
 {
     match args.protocol_type {
-        WhirType::PCS => run_whir_pcs::<F, MerkleConfig>(args, leaf_hash_params, two_to_one_params),
+        WhirType::PCS => run_whir_pcs(args),
         WhirType::LDT => {
             run_whir_as_ldt::<F, MerkleConfig>(args, leaf_hash_params, two_to_one_params)
         }
@@ -295,15 +298,15 @@ fn run_whir_as_ldt<F, MerkleConfig>(
     dbg!(HashCounter::get() as f64 / reps as f64);
 }
 
-fn run_whir_pcs<F, MerkleConfig>(
-    args: Args,
-    leaf_hash_params: <<MerkleConfig as Config>::LeafHash as CRHScheme>::Parameters,
-    two_to_one_params: <<MerkleConfig as Config>::TwoToOneHash as TwoToOneCRHScheme>::Parameters,
-) where
-    F: FftField + CanonicalSerialize,
-    MerkleConfig: Config<Leaf = [F]> + Clone,
-    MerkleConfig::InnerDigest: AsRef<[u8]> + From<[u8; 32]>,
-{
+fn run_whir_pcs(args: Args) {
+    use fields::Field256 as F;
+    use merkle_tree::keccak as mt;
+    use nimue::plugins::ark as _;
+    type MerkleConfig = mt::MerkleTreeParams<F>;
+    let mut rng = ark_std::test_rng();
+    let (leaf_hash_params, two_to_one_params) = mt::default_config::<F>(&mut rng);
+    // run_whir::<F, mt::MerkleTreeParams<F>>(args, leaf_hash_params, two_to_one_params);
+
     use whir::whir::{
         committer::Committer, iopattern::WhirIOPattern, parameters::WhirConfig, prover::Prover,
         verifier::Verifier, whir_proof_size, Statement,
@@ -343,10 +346,11 @@ fn run_whir_pcs<F, MerkleConfig>(
 
     let params = WhirConfig::<F, MerkleConfig, PowStrategy>::new(mv_params, whir_params);
 
-    let io = IOPattern::<DefaultHash>::new("🌪️")
+    let io = IOPattern::<SkyscraperSponge, ark_bn254::Fr>::new("🌪️")
         .commit_statement(&params)
-        .add_whir_proof(&params)
-        .clone();
+        .add_whir_proof(&params);
+
+    println!("io: {:?}", io);
 
     let mut merlin = io.to_merlin();
 
