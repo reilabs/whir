@@ -1,12 +1,15 @@
+use std::borrow::Borrow;
 use std::time::Instant;
 
+use ark_crypto_primitives::merkle_tree::IdentityDigestConverter;
 use ark_crypto_primitives::{
     crh::{CRHScheme, TwoToOneCRHScheme},
     merkle_tree::Config,
+    Error,
 };
-use ark_ff::FftField;
+use ark_ff::{FftField, Field};
 use ark_serialize::CanonicalSerialize;
-use nimue::{DefaultHash, IOPattern};
+use nimue::{Arthur, DefaultHash, IOPattern, Merlin, ProofResult};
 use whir::{
     cmdline_utils::{AvailableFields, AvailableMerkle, WhirType},
     crypto::{
@@ -22,8 +25,12 @@ use nimue_pow::blake3::Blake3PoW;
 
 use clap::Parser;
 use nimue::hash::sponge::{DuplexSponge, Sponge};
+use nimue::plugins::ark::{FieldIOPattern, FieldReader, FieldWriter};
+use rand::Rng;
 use whir::crypto::fields::Field256;
 use whir::skyscraper::{Skyscraper, SkyscraperSponge};
+use whir::whir::fs_utils::{DigestReader, DigestWriter};
+use whir::whir::iopattern::DigestIOPattern;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -185,6 +192,8 @@ fn run_whir<F, MerkleConfig>(
     F: FftField + CanonicalSerialize,
     MerkleConfig: Config<Leaf = [F]> + Clone,
     MerkleConfig::InnerDigest: AsRef<[u8]> + From<[u8; 32]>,
+    IOPattern: DigestIOPattern<MerkleConfig>,
+    Merlin: DigestWriter<MerkleConfig>, for<'a> Arthur<'a>: DigestReader<MerkleConfig>
 {
     match args.protocol_type {
         WhirType::PCS => run_whir_pcs(args),
@@ -202,6 +211,9 @@ fn run_whir_as_ldt<F, MerkleConfig>(
     F: FftField + CanonicalSerialize,
     MerkleConfig: Config<Leaf = [F]> + Clone,
     MerkleConfig::InnerDigest: AsRef<[u8]> + From<[u8; 32]>,
+    IOPattern: DigestIOPattern<MerkleConfig>,
+    Merlin: DigestWriter<MerkleConfig>,
+    for <'a> Arthur<'a>: DigestReader<MerkleConfig>,
 {
     use whir::whir::{
         committer::Committer, iopattern::WhirIOPattern, parameters::WhirConfig, prover::Prover,
@@ -297,16 +309,94 @@ fn run_whir_as_ldt<F, MerkleConfig>(
     dbg!(whir_verifier_time.elapsed() / reps as u32);
     dbg!(HashCounter::get() as f64 / reps as f64);
 }
+struct SkyscraperCRH;
+
+impl CRHScheme for SkyscraperCRH {
+    type Input = [Field256];
+    type Output = Field256;
+    type Parameters = ();
+
+    fn setup<R: Rng>(r: &mut R) -> Result<Self::Parameters, Error> {
+        Ok(())
+    }
+
+    fn evaluate<T: Borrow<Self::Input>>(
+        parameters: &Self::Parameters,
+        input: T,
+    ) -> Result<Self::Output, Error> {
+        let elems = input.borrow();
+        elems
+            .iter()
+            .cloned()
+            .reduce(whir::skyscraper::compress)
+            .ok_or(Error::IncorrectInputLength(0))
+    }
+}
+
+struct SkyscraperTwoToOne;
+
+impl TwoToOneCRHScheme for SkyscraperTwoToOne {
+    type Input = Field256;
+    type Output = Field256;
+    type Parameters = ();
+
+    fn setup<R: Rng>(r: &mut R) -> Result<Self::Parameters, Error> {
+        Ok(())
+    }
+
+    fn evaluate<T: Borrow<Self::Input>>(
+        parameters: &Self::Parameters,
+        left_input: T,
+        right_input: T,
+    ) -> Result<Self::Output, Error> {
+        Ok(whir::skyscraper::compress(
+            left_input.borrow().clone(),
+            right_input.borrow().clone(),
+        ))
+    }
+
+    fn compress<T: Borrow<Self::Output>>(
+        parameters: &Self::Parameters,
+        left_input: T,
+        right_input: T,
+    ) -> Result<Self::Output, Error> {
+        <Self as TwoToOneCRHScheme>::evaluate(parameters, left_input, right_input)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SkyscraperMerkleConfig;
+
+impl Config for SkyscraperMerkleConfig {
+    type Leaf = [Field256];
+    type LeafDigest = Field256;
+    type LeafInnerDigestConverter = IdentityDigestConverter<Field256>;
+    type InnerDigest = Field256;
+    type LeafHash = SkyscraperCRH;
+    type TwoToOneHash = SkyscraperTwoToOne;
+}
+
+impl DigestIOPattern<SkyscraperMerkleConfig> for IOPattern<SkyscraperSponge, Field256> {
+    fn add_digest(self, label: &str) -> Self {
+        <Self as FieldIOPattern<Field256>>::add_scalars(self, 1, label)
+    }
+}
+
+impl DigestWriter<SkyscraperMerkleConfig> for Merlin<SkyscraperSponge, Field256> {
+    fn add_digest(&mut self, digest: Field256) -> ProofResult<()> {
+        self.add_scalars(&[digest])
+    }
+}
+
+impl <'a> DigestReader<SkyscraperMerkleConfig> for Arthur<'a, SkyscraperSponge, Field256> {
+    fn read_digest(&mut self) -> ProofResult<Field256> {
+        let [r] = self.next_scalars()?;
+        Ok(r)
+    }
+}
 
 fn run_whir_pcs(args: Args) {
     use fields::Field256 as F;
-    use merkle_tree::keccak as mt;
-    use nimue::plugins::ark as _;
-    type MerkleConfig = mt::MerkleTreeParams<F>;
-    let mut rng = ark_std::test_rng();
-    let (leaf_hash_params, two_to_one_params) = mt::default_config::<F>(&mut rng);
-    // run_whir::<F, mt::MerkleTreeParams<F>>(args, leaf_hash_params, two_to_one_params);
-
     use whir::whir::{
         committer::Committer, iopattern::WhirIOPattern, parameters::WhirConfig, prover::Prover,
         verifier::Verifier, whir_proof_size, Statement,
@@ -331,22 +421,22 @@ fn run_whir_pcs(args: Args) {
 
     let mv_params = MultivariateParameters::<F>::new(num_variables);
 
-    let whir_params = WhirParameters::<MerkleConfig, PowStrategy> {
+    let whir_params = WhirParameters::<SkyscraperMerkleConfig, PowStrategy> {
         initial_statement: true,
         security_level,
         pow_bits,
         folding_factor,
-        leaf_hash_params,
-        two_to_one_params,
+        leaf_hash_params: (),
+        two_to_one_params: (),
         soundness_type,
         fold_optimisation,
         _pow_parameters: Default::default(),
         starting_log_inv_rate: starting_rate,
     };
 
-    let params = WhirConfig::<F, MerkleConfig, PowStrategy>::new(mv_params, whir_params);
+    let params = WhirConfig::<F, SkyscraperMerkleConfig, PowStrategy>::new(mv_params, whir_params);
 
-    let io = IOPattern::<SkyscraperSponge, ark_bn254::Fr>::new("🌪️")
+    let io = IOPattern::<SkyscraperSponge, F>::new("🌪️")
         .commit_statement(&params)
         .add_whir_proof(&params);
 
@@ -403,7 +493,7 @@ fn run_whir_pcs(args: Args) {
 
     HashCounter::reset();
     let whir_verifier_time = Instant::now();
-    for _ in 0..reps {
+    for _ in 0..1 {
         let mut arthur = io.to_arthur(merlin.transcript());
         verifier.verify(&mut arthur, &statement, &proof).unwrap();
     }

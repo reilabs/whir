@@ -5,10 +5,10 @@ use ruint::Uint;
 use ruint_macro::uint;
 use zeroize::Zeroize;
 
-const fn uint_to_field(i: Uint<256, 4>) -> ark_bn254::Fr {
-    ark_bn254::Fr::new(BigInt(i.into_limbs()))
+const fn uint_to_field(i: Uint<256, 4>) -> Field256 {
+    Field256::new(BigInt(i.into_limbs()))
 }
-const RC: [ark_bn254::Fr; 8] = [
+const RC: [Field256; 8] = [
     uint_to_field(uint!(
         17829420340877239108687448009732280677191990375576158938221412342251481978692_U256
     )),
@@ -35,7 +35,7 @@ const RC: [ark_bn254::Fr; 8] = [
     )),
 ];
 
-const SIGMA: ark_bn254::Fr = uint_to_field(uint!(
+const SIGMA: Field256 = uint_to_field(uint!(
     9915499612839321149637521777990102151350674507940716049588462388200839649614_U256
 ));
 
@@ -51,20 +51,20 @@ fn bigint_from_bytes_le<const N: usize>(bytes: &[u8]) -> BigInt<N> {
     BigInt::new(limbs.try_into().unwrap())
 }
 
-fn bar(a: ark_bn254::Fr) -> ark_bn254::Fr {
+fn bar(a: Field256) -> Field256 {
     let mut bytes = a.into_bigint().to_bytes_le();
     let (left, right) = bytes.split_at_mut(16);
     left.swap_with_slice(right);
     bytes.iter_mut().for_each(|b| *b = sbox(*b));
 
-    ark_bn254::Fr::new(bigint_from_bytes_le(&bytes))
+    Field256::new(bigint_from_bytes_le(&bytes))
 }
 
-fn square(a: ark_bn254::Fr) -> ark_bn254::Fr {
+fn square(a: Field256) -> Field256 {
     a * a * SIGMA
 }
 
-type State = [ark_bn254::Fr; 2];
+type State = [Field256; 2];
 fn permute([l, r]: State) -> State {
     let (l, r) = (r + square(l), l);
     let (l, r) = (r + square(l) + RC[0], l);
@@ -79,9 +79,9 @@ fn permute([l, r]: State) -> State {
     [l, r]
 }
 
-fn compress(l: ark_bn254::Fr, r: ark_bn254::Fr) -> ark_bn254::Fr {
-    let a = l;
-    let [l, _] = permute([l, r]);
+pub fn compress(l: Field256, r: Field256) -> Field256 {
+    let a = l.clone();
+    let [l, _] = permute([l.clone(), r.clone()]);
     l + a
 }
 
@@ -89,25 +89,25 @@ fn compress(l: ark_bn254::Fr, r: ark_bn254::Fr) -> ark_bn254::Fr {
 pub struct Skyscraper {
     state: State,
 }
-impl AsRef<[ark_bn254::Fr]> for Skyscraper {
-    fn as_ref(&self) -> &[ark_bn254::Fr] {
+impl AsRef<[Field256]> for Skyscraper {
+    fn as_ref(&self) -> &[Field256] {
         &self.state
     }
 }
 
-impl AsMut<[ark_bn254::Fr]> for Skyscraper {
-    fn as_mut(&mut self) -> &mut [ark_bn254::Fr] {
+impl AsMut<[Field256]> for Skyscraper {
+    fn as_mut(&mut self) -> &mut [Field256] {
         &mut self.state
     }
 }
 
 impl Sponge for Skyscraper {
-    type U = ark_bn254::Fr;
+    type U = Field256;
     const N: usize = 2;
     const R: usize = 1;
 
     fn new(iv: [u8; 32]) -> Self {
-        let felt = ark_bn254::Fr::new(bigint_from_bytes_le(&iv));
+        let felt = Field256::new(bigint_from_bytes_le(&iv));
         Self { state: [0.into(), felt] }
     }
 
@@ -160,5 +160,6 @@ mod tests {
             uint_to_field(3583228880285179354728993622328037400470978495633822008876840172083178912457_U256.into())
             );
         }
+
     }
 }
